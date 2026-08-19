@@ -1,0 +1,228 @@
+name: CI - flag-service
+
+# Roda a cada Pull Request e a cada push na main (requisito do Tech Challenge Fase 3).
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+permissions:
+  contents: read
+
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: flag-service
+  # Versão da action do Trivy (bump manual quando quiser atualizar).
+  TRIVY_VERSION: "0.28.0"
+
+jobs:
+  # ---------------------------------------------------------------------------
+  # 1) Build & Unit Test
+  # ---------------------------------------------------------------------------
+  build-test:
+    name: Build & Unit Test
+    runs-on: ubuntu-latest
+
+    # O app.py conecta no Postgres já no import, então subimos um banco real.
+    services:
+      postgres:
+        image: postgres:15-alpine
+        env:
+          POSTGRES_DB: flags_db
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d flags_db"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgres://postgres:postgres@localhost:5432/flags_db
+      AUTH_SERVICE_URL: http://localhost:8001
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instalar dependências
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Carregar schema do banco
+        run: psql "$DATABASE_URL" -f db/init.sql
+
+      - name: Rodar testes (pytest)
+        run: pytest
+
+  # ---------------------------------------------------------------------------
+  # 2) Linter / Static Analysis (flake8)
+  # ---------------------------------------------------------------------------
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instalar flake8
+        run: pip install flake8==7.1.1
+
+      - name: Erros que bloqueiam (sintaxe / nomes indefinidos)
+        run: flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+
+      - name: Relatório de estilo (informativo, não bloqueia)
+        run: flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
+
+  # ---------------------------------------------------------------------------
+  # 3a) SAST - Static Application Security Testing (bandit)
+  # ---------------------------------------------------------------------------
+  sast:
+    name: SAST (bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+
+      - name: Instalar bandit
+        run: pip install bandit==1.7.10
+
+      - name: Relatório completo (informativo)
+        run: bandit -r . -x ./tests,./.venv -f txt || true
+
+      - name: Gate de segurança (falha em HIGH severity / HIGH confidence)
+        run: bandit -r . -x ./tests,./.venv --severity-level high --confidence-level high
+
+  # ---------------------------------------------------------------------------
+  # 3b) SCA - Software Composition Analysis (Trivy filesystem)
+  #     Regra do challenge: vulnerabilidade CRÍTICA -> pipeline falha.
+  # ---------------------------------------------------------------------------
+  sca:
+    name: SCA (Trivy fs)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Relatório de dependências (HIGH + CRITICAL, informativo)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+
+      - name: Gate de segurança (falha em CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  # ---------------------------------------------------------------------------
+  # 4) Docker Build + Container Scan (Trivy image)
+  #    Só roda se todos os gates anteriores passarem.
+  # ---------------------------------------------------------------------------
+  docker:
+    name: Docker Build & Container Scan
+    runs-on: ubuntu-latest
+    needs: [build-test, lint, sast, sca]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build da imagem Docker
+        run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
+
+      - name: Container scan - relatório (HIGH + CRITICAL, informativo)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: HIGH,CRITICAL
+          exit-code: "0"
+          format: table
+
+      - name: Container scan - gate (falha em CRITICAL)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: image
+          image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: "1"
+          format: table
+
+  # ---------------------------------------------------------------------------
+  # 5) Push para o AWS ECR (tag = commit hash)
+  #    DESATIVADO por padrão. Para ligar, quando a infra AWS/ECR existir:
+  #      - crie a repo variable  ENABLE_ECR_PUSH = true
+  #      - crie a repo variable  AWS_REGION      = <sua-regiao>   (ex: us-east-1)
+  #      - crie os secrets       AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+  #      - (AWS Academy) crie também o secret AWS_SESSION_TOKEN
+  #      - garanta o repositório ECR "flag-service"
+  # ---------------------------------------------------------------------------
+  push-ecr:
+    name: Push to AWS ECR
+    runs-on: ubuntu-latest
+    needs: [docker]
+    if: >-
+      github.event_name == 'push' &&
+      github.ref == 'refs/heads/main' &&
+      vars.ENABLE_ECR_PUSH == 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configurar credenciais AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          # Necessário no AWS Academy (credenciais temporárias). Deixe o secret
+          # vazio/inexistente ao usar uma conta pessoal com chaves permanentes.
+          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login no Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag e push da imagem
+        env:
+          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          REPOSITORY: ${{ env.IMAGE_NAME }}
+        run: |
+          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
+          docker build \
+            -t "$REGISTRY/$REPOSITORY:$SHORT_SHA" \
+            -t "$REGISTRY/$REPOSITORY:latest" .
+          docker push "$REGISTRY/$REPOSITORY:$SHORT_SHA"
+          docker push "$REGISTRY/$REPOSITORY:latest"
+          echo "Imagem publicada: $REGISTRY/$REPOSITORY:$SHORT_SHA"

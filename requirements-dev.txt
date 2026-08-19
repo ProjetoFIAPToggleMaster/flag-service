@@ -1,0 +1,4 @@
+# Dependências usadas apenas em CI / desenvolvimento (não vão para a imagem)
+pytest==8.3.3
+flake8==7.1.1
+bandit==1.7.10
