@@ -13,8 +13,6 @@ permissions:
 env:
   PYTHON_VERSION: "3.11"
   IMAGE_NAME: flag-service
-  # Versão da action do Trivy (bump manual quando quiser atualizar).
-  TRIVY_VERSION: "0.28.0"
 
 jobs:
   # ---------------------------------------------------------------------------
@@ -127,7 +125,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Relatório de dependências (HIGH + CRITICAL, informativo)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scan-ref: .
@@ -136,7 +134,7 @@ jobs:
           format: table
 
       - name: Gate de segurança (falha em CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: fs
           scan-ref: .
@@ -161,7 +159,7 @@ jobs:
         run: docker build -t ${{ env.IMAGE_NAME }}:${{ github.sha }} .
 
       - name: Container scan - relatório (HIGH + CRITICAL, informativo)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: image
           image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
@@ -170,7 +168,7 @@ jobs:
           format: table
 
       - name: Container scan - gate (falha em CRITICAL)
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: image
           image-ref: ${{ env.IMAGE_NAME }}:${{ github.sha }}
