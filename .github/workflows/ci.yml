@@ -1,6 +1,5 @@
 name: CI - flag-service
 
-# Roda a cada Pull Request e a cada push na main (requisito do Tech Challenge Fase 3).
 on:
   push:
     branches: [ main ]
@@ -15,14 +14,10 @@ env:
   IMAGE_NAME: flag-service
 
 jobs:
-  # ---------------------------------------------------------------------------
-  # 1) Build & Unit Test
-  # ---------------------------------------------------------------------------
   build-test:
     name: Build & Unit Test
     runs-on: ubuntu-latest
 
-    # O app.py conecta no Postgres já no import, então subimos um banco real.
     services:
       postgres:
         image: postgres:15-alpine
@@ -63,9 +58,7 @@ jobs:
       - name: Rodar testes (pytest)
         run: pytest
 
-  # ---------------------------------------------------------------------------
-  # 2) Linter / Static Analysis (flake8)
-  # ---------------------------------------------------------------------------
+  
   lint:
     name: Lint (flake8)
     runs-on: ubuntu-latest
@@ -88,9 +81,7 @@ jobs:
       - name: Relatório de estilo (informativo, não bloqueia)
         run: flake8 . --count --exit-zero --max-complexity=10 --max-line-length=120 --statistics
 
-  # ---------------------------------------------------------------------------
-  # 3a) SAST - Static Application Security Testing (bandit)
-  # ---------------------------------------------------------------------------
+  
   sast:
     name: SAST (bandit)
     runs-on: ubuntu-latest
@@ -113,10 +104,7 @@ jobs:
       - name: Gate de segurança (falha em HIGH severity / HIGH confidence)
         run: bandit -r . -x ./tests,./.venv --severity-level high --confidence-level high
 
-  # ---------------------------------------------------------------------------
-  # 3b) SCA - Software Composition Analysis (Trivy filesystem)
-  #     Regra do challenge: vulnerabilidade CRÍTICA -> pipeline falha.
-  # ---------------------------------------------------------------------------
+  
   sca:
     name: SCA (Trivy fs)
     runs-on: ubuntu-latest
@@ -143,10 +131,7 @@ jobs:
           exit-code: "1"
           format: table
 
-  # ---------------------------------------------------------------------------
-  # 4) Docker Build + Container Scan (Trivy image)
-  #    Só roda se todos os gates anteriores passarem.
-  # ---------------------------------------------------------------------------
+  
   docker:
     name: Docker Build & Container Scan
     runs-on: ubuntu-latest
@@ -177,15 +162,6 @@ jobs:
           exit-code: "1"
           format: table
 
-  # ---------------------------------------------------------------------------
-  # 5) Push para o AWS ECR (tag = commit hash)
-  #    DESATIVADO por padrão. Para ligar, quando a infra AWS/ECR existir:
-  #      - crie a repo variable  ENABLE_ECR_PUSH = true
-  #      - crie a repo variable  AWS_REGION      = <sua-regiao>   (ex: us-east-1)
-  #      - crie os secrets       AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-  #      - (AWS Academy) crie também o secret AWS_SESSION_TOKEN
-  #      - garanta o repositório ECR "flag-service"
-  # ---------------------------------------------------------------------------
   push-ecr:
     name: Push to AWS ECR
     runs-on: ubuntu-latest
@@ -203,8 +179,6 @@ jobs:
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          # Necessário no AWS Academy (credenciais temporárias). Deixe o secret
-          # vazio/inexistente ao usar uma conta pessoal com chaves permanentes.
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
           aws-region: ${{ vars.AWS_REGION }}
 
