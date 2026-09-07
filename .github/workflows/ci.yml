@@ -166,35 +166,72 @@ jobs:
     name: Push to AWS ECR
     runs-on: ubuntu-latest
     needs: [docker]
-    if: >-
-      github.event_name == 'push' &&
-      github.ref == 'refs/heads/main' &&
-      vars.ENABLE_ECR_PUSH == 'true'
+    # Publicação só a partir da main: rodar em PR entregaria credenciais AWS
+    # a código ainda não revisado, vindo de qualquer branch.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Definir SHA curto
+        id: vars
+        run: echo "sha_short=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
+      # Sem aws-session-token: a conta usa um usuário IAM comum, com
+      # credenciais de longa duração. Session token só existe em credenciais
+      # temporárias (AWS Academy / SSO / role assumida).
       - name: Configurar credenciais AWS
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
-          aws-region: ${{ vars.AWS_REGION }}
+          aws-region: ${{ secrets.AWS_REGION }}
 
       - name: Login no Amazon ECR
-        id: login-ecr
+        id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
+      # Uma única tag imutável v1.0.0-<sha>. A tag "latest" foi removida: o
+      # repositório ECR é criado com IMMUTABLE, então o segundo push de
+      # "latest" seria rejeitado pelo registry.
       - name: Build, tag e push da imagem
         env:
-          REGISTRY: ${{ steps.login-ecr.outputs.registry }}
-          REPOSITORY: ${{ env.IMAGE_NAME }}
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          IMAGE_TAG: v1.0.0-${{ steps.vars.outputs.sha_short }}
         run: |
-          SHORT_SHA=$(echo "${{ github.sha }}" | cut -c1-7)
-          docker build \
-            -t "$REGISTRY/$REPOSITORY:$SHORT_SHA" \
-            -t "$REGISTRY/$REPOSITORY:latest" .
-          docker push "$REGISTRY/$REPOSITORY:$SHORT_SHA"
-          docker push "$REGISTRY/$REPOSITORY:latest"
-          echo "Imagem publicada: $REGISTRY/$REPOSITORY:$SHORT_SHA"
+          docker build -t "${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}" .
+          docker push "${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+          echo "Imagem publicada: ${ECR_REGISTRY}/${IMAGE_NAME}:${IMAGE_TAG}"
+
+      # -----------------------------------------------------------------
+      # GitOps: atualiza a tag no repo raiz; o ArgoCD sincroniza sozinho
+      # -----------------------------------------------------------------
+      # Precisa do secret GITOPS_PAT: o GITHUB_TOKEN deste repositório só
+      # tem permissão sobre ele mesmo, não sobre o repo raiz.
+      # 'ref: master' porque o repo raiz usa master (os serviços usam main).
+      - name: Checkout do repo GitOps
+        uses: actions/checkout@v4
+        with:
+          repository: ProjetoFIAPToggleMaster/toggle-master-microservices
+          ref: master
+          token: ${{ secrets.GITOPS_PAT }}
+          path: gitops-repo
+
+      - name: Atualizar a tag da imagem no repo GitOps
+        env:
+          IMAGE_TAG: v1.0.0-${{ steps.vars.outputs.sha_short }}
+        run: |
+          cd gitops-repo
+          sed -i -E "s|(image: .*/${IMAGE_NAME}):.*|\1:${IMAGE_TAG}|" k8s/overlays/prod/patch-images.yaml
+
+          # Reexecutar o mesmo commit não muda nada no arquivo, e um
+          # 'git commit' sem alterações falharia — então saímos antes.
+          if git diff --quiet; then
+            echo "patch-images.yaml já aponta para ${IMAGE_TAG}; nada a fazer."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git commit -am "chore(${IMAGE_NAME}): imagem ${IMAGE_TAG}"
+          git push origin master
