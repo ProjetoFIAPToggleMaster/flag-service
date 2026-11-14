@@ -7,7 +7,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir --upgrade pip \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir -r requirements.txt \
+    && opentelemetry-bootstrap -a install
 
 FROM python:3.11-slim AS runtime
 
@@ -32,4 +33,4 @@ EXPOSE 8002
 
 USER appuser
 
-CMD ["gunicorn", "--bind", "0.0.0.0:8002", "--workers", "2", "--access-logfile", "-", "app:app"]
+CMD ["opentelemetry-instrument", "gunicorn", "--bind", "0.0.0.0:8002", "--workers", "2", "--access-logfile", "-", "app:app"]
